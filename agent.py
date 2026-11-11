@@ -15,11 +15,23 @@ get_status và get_incident_details. Nếu incident ban đầu dẫn tới incid
 yêu cầu theo liên kết, hãy đọc incident ban đầu trước, rồi gọi incident liên kết ở model step
 tiếp theo trước khi kết luận. Nếu dữ liệu bị truncated, không suy đoán phần bị cắt.'''
 
+LOOP_POLICY = '''Quy tắc điều phối tool bắt buộc:
+- Nếu tool trả RATE_LIMITED/HTTP 429 và cho biết có thể retry, phải gọi lại chính tool đó
+  ít nhất một lần trước khi kết luận thiếu dữ liệu; tổng số lần gọi tool đó không vượt quá 3.
+- Kết quả status chỉ dùng để tìm incident. Khi câu hỏi yêu cầu incident mới nhất, chi tiết,
+  phạm vi ảnh hưởng hoặc đối chiếu incident, phải gọi get_incident_details cho từng incident
+  liên quan trước khi trả lời; không suy ra chi tiết chỉ từ tên incident.
+- Khi get_incident_details trả next_offset và câu hỏi cần phần timeline chưa đọc, tiếp tục với
+  offset đó; không nói đã đọc hết timeline nếu vẫn còn next_offset.
+- Không lặp lại tool đã thành công nếu câu hỏi không cần thêm dữ liệu.'''
+
 
 def run_agent(question, provider, tools, max_steps=6):
     """Trả dict: status, answer, trace, usage. Contract chi tiết trong GUIDE.md."""
     schemas = getattr(tools, 'schemas', SCHEMAS)
-    system_prompt = getattr(tools, 'system_prompt', SYSTEM_PROMPT)
+    # Giữ prompt chuyên biệt của từng bộ tools, đồng thời áp dụng cùng một chính sách
+    # điều phối/retry cho cả bài chính và bonus.
+    system_prompt = getattr(tools, 'system_prompt', SYSTEM_PROMPT) + '\n' + LOOP_POLICY
     messages = [
         {'role': 'system', 'content': system_prompt},
         {'role': 'user', 'content': question},

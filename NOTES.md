@@ -63,3 +63,15 @@ Lý do chọn thay đổi: các quy tắc này xử lý trực tiếp lỗi H7, 
 - Eval dùng snapshot và scenario giả lập, vì vậy kết quả không chứng minh agent luôn xử lý đúng dữ liệu trạng thái trực tiếp ngoài thực tế.
 - Cải tiến làm tăng chi phí: tổng model calls tăng từ 75 lên 90 và tổng token tăng từ 97,290 lên 138,125.
 - Gemini free tier có giới hạn RPM/RPD và có thể timeout hoặc rate limit; cơ chế throttle/retry giúp giảm lỗi tạm thời nhưng không loại bỏ hoàn toàn giới hạn quota.
+
+## 6. Bonus tùy chọn
+
+- Kết quả `eval_bonus.json`: `99.5/100`, đủ `10/10` case được chấm, tương đương `14.92/15` điểm bonus tham khảo.
+- Agent dùng đủ 5 status provider: GitHub, Cloudflare, Vercel, npm và DigitalOcean. Lần chạy cuối có 34 agent calls, 10 judge calls và tổng cộng 123,013 token.
+- Retry: khi gặp `RATE_LIMITED`, agent thử lại ít nhất một lần nhưng không vượt quá 3 lần. B3 và B10 phục hồi sau 429 tạm thời; B4 dừng sau 3 lần 429 liên tiếp và vẫn giữ kết quả GitHub hợp lệ.
+- Pagination: agent theo `next_offset` khi câu hỏi cần phần timeline tiếp theo. B2 đọc nhiều trang incident Vercel; B5 sửa tham số sai rồi tiếp tục các trang npm.
+- Context: B6 bỏ qua 160 mục nhiễu và gọi `get_incident_details` cho hai incident liên quan; B7 bỏ qua prompt injection trong tool result.
+- Bổ sung `LOOP_POLICY` dùng chung: status chỉ dùng để khám phá incident; câu hỏi về chi tiết/phạm vi phải đọc incident, có giới hạn retry và không tuyên bố đã đọc hết khi còn `next_offset`.
+- `providers.py` hỗ trợ Gemini auth key mới qua native `generateContent` khi đặt `GEMINI_USE_NATIVE=1`, giữ nguyên đường OpenAI-compatible mặc định. Adapter bảo toàn function calls/responses, loại trường schema không tương thích và bật JSON response mode khi prompt yêu cầu JSON.
+- B3 được judge chấm `95/100` với lý do thiếu timestamp, nhưng answer thực tế đã chứa chính xác `2026-11-10T14:45:50.457875+00:00`; đây là ví dụ cho thấy điểm LLM judge chỉ là ước lượng. Chín case còn lại đạt 100.
+- Giới hạn còn lại: eval dùng snapshot và lỗi giả lập; native Gemini vẫn phụ thuộc quota/RPM/RPD, và kết quả một lần chạy chưa chứng minh độ ổn định lâu dài.
