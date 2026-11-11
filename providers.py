@@ -1,6 +1,8 @@
 """Bốn provider cùng một interface. Không chứa agent loop."""
 import json
 import os
+import threading
+import time
 import urllib.error
 import urllib.request
 
@@ -11,17 +13,58 @@ CONFIG = {
     'anthropic': ('ANTHROPIC_API_KEY', 'https://api.anthropic.com/v1/messages'),
 }
 
+_GEMINI_RATE_LOCK = threading.Lock()
+_GEMINI_NEXT_REQUEST_AT = 0.0
+
+
+def wait_for_gemini_rate_limit():
+    """Giản cách request Gemini trong một process để tránh vượt RPM.
+
+    Mặc định không chờ. Free tier 15 RPM có thể đặt
+    GEMINI_MIN_INTERVAL_SECONDS=4.5 (xấp xỉ 13 request/phút).
+    """
+    global _GEMINI_NEXT_REQUEST_AT
+    raw_interval = os.getenv('GEMINI_MIN_INTERVAL_SECONDS', '0')
+    try:
+        interval = max(0.0, float(raw_interval))
+    except ValueError:
+        interval = 0.0
+    if interval == 0:
+        return
+    with _GEMINI_RATE_LOCK:
+        delay = _GEMINI_NEXT_REQUEST_AT - time.monotonic()
+        if delay > 0:
+            time.sleep(delay)
+        _GEMINI_NEXT_REQUEST_AT = time.monotonic() + interval
+
 
 def post_json(url, headers, payload):
     req = urllib.request.Request(url, data=json.dumps(payload).encode(), headers={'Content-Type': 'application/json', **headers})
-    try:
-        with urllib.request.urlopen(req, timeout=60) as response:
-            return json.load(response)
-    except urllib.error.HTTPError as exc:
-        # Do not print response bodies: they may contain account or request data.
-        raise RuntimeError(f'Provider trả HTTP {exc.code}; kiểm tra model, key và quota.') from exc
-    except urllib.error.URLError as exc:
-        raise RuntimeError(f'Không kết nối được provider: {exc.reason}') from exc
+    for attempt in range(2):
+        try:
+            with urllib.request.urlopen(req, timeout=60) as response:
+                return json.load(response)
+        except urllib.error.HTTPError as exc:
+            if attempt == 0 and exc.code in (429, 500, 502, 503, 504):
+                retry_after = exc.headers.get('Retry-After') if exc.headers else None
+                try:
+                    delay = float(retry_after)
+                except (TypeError, ValueError):
+                    delay = 60.0 if exc.code == 429 else 10.0
+                time.sleep(max(1.0, min(delay, 60.0)))
+                continue
+            # Do not print response bodies: they may contain account or request data.
+            raise RuntimeError(f'Provider trả HTTP {exc.code}; kiểm tra model, key và quota.') from exc
+        except TimeoutError as exc:
+            if attempt == 0:
+                time.sleep(10.0)
+                continue
+            raise RuntimeError(f'Provider timeout sau khi đã retry: {exc}') from exc
+        except urllib.error.URLError as exc:
+            if attempt == 0 and isinstance(exc.reason, TimeoutError):
+                time.sleep(10.0)
+                continue
+            raise RuntimeError(f'Không kết nối được provider: {exc.reason}') from exc
 
 
 class Provider:
@@ -44,6 +87,8 @@ class Provider:
     def complete(self, messages, schemas):
         if self.name == 'anthropic':
             return self._anthropic(messages, schemas)
+        if self.name == 'gemini':
+            wait_for_gemini_rate_limit()
         payload = {'model': self.model, 'messages': messages}
         if schemas:
             payload['tools'] = schemas
